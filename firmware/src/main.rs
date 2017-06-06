@@ -1,4 +1,4 @@
-#![feature(used, const_fn, core_float)]
+#![feature(asm, used, const_fn, core_float)]
 #![no_std]
 
 extern crate cortex_m;
@@ -6,11 +6,12 @@ extern crate cortex_m_rt;
 extern crate tm4c129x;
 
 use core::cell::{Cell, RefCell};
-use core::fmt;
 use cortex_m::exception::Handlers as ExceptionHandlers;
 use cortex_m::interrupt::Mutex;
 use tm4c129x::interrupt::Interrupt;
 use tm4c129x::interrupt::Handlers as InterruptHandlers;
+
+use board::UART0;
 
 #[macro_export]
 macro_rules! print {
@@ -50,30 +51,19 @@ static LOOP_CATHODE: Mutex<RefCell<loop_cathode::Controller>> = Mutex::new(RefCe
 static ELECTROMETER: Mutex<RefCell<electrometer::Electrometer>> = Mutex::new(RefCell::new(
     electrometer::Electrometer::new()));
 
-
-pub struct UART0;
-
-impl fmt::Write for UART0 {
-    fn write_str(&mut self, s: &str) -> Result<(), fmt::Error> {
-        for c in s.bytes() {
-            unsafe {
-                let uart_0 = tm4c129x::UART0.get();
-                while (*uart_0).fr.read().txff().bit() {}
-                (*uart_0).dr.write(|w| w.data().bits(c))
-            }
-        }
-        Ok(())
-    }
-}
-
 fn main() {
     board::init();
 
-    cortex_m::interrupt::free(|cs| {
-        // Enable FPU
-        let scb = tm4c129x::SCB.borrow(cs);
-        scb.enable_fpu();
+    let t1 : f64 = 1.9;
+    let mut t2 : f64 = 1.0;
+    while t2 < 20.0 {
+        t2 = t2 * t1;
+    }
+    println!("FPU test: {} (24.760988)", t2);
 
+    println!("Ready.");
+
+    cortex_m::interrupt::free(|cs| {
         let nvic = tm4c129x::NVIC.borrow(cs);
         nvic.enable(Interrupt::ADC0SS0);
 
@@ -92,24 +82,17 @@ fn main() {
         let emission = 1.0e-3;
         */
         // ZJ-12
-        let anode = 200.0;
-        let cathode_bias = 50.0;
-        let emission = 4.0e-3;
+        let anode : f64 = 200.0;
+        let cathode_bias : f64 = 50.0;
+        let emission : f64 = 4.0e-3;
+/*
         loop_anode.set_target(anode);
         loop_cathode.set_emission_target(emission);
         loop_cathode.set_bias_target(cathode_bias);
+*/
     });
 
-    println!(r#"
-  _                         _
- (_)                       | |
-  _  ___  _ __  _ __   __ _| |
- | |/ _ \| '_ \| '_ \ / _` | |/ /
- | | (_) | | | | |_) | (_| |   <
- |_|\___/|_| |_| .__/ \__,_|_|\_\
-               | |
-               |_|
-Ready."#);
+    println!("FPU1");
 
     let mut next_blink = 0;
     let mut next_info = 0;

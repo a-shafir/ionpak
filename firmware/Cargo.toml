@@ -8,6 +8,15 @@ cortex-m = "0.2.5"
 cortex-m-rt = { version = "0.2.0", features = ["linker-script"], default-features = false }
 tm4c129x = { git = "https://github.com/m-labs/dslite2svd" }
 
+[features]
+divsclk = []
+ionpak1 = []
+
 [profile.release]
-lto = true
-debug = true
+opt-level = 3
+debug = false
+rpath = false
+lto = false
+debug-assertions = false
+codegen-units = 1
+

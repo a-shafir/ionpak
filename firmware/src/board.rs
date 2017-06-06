@@ -1,6 +1,10 @@
+use core::fmt;
+
 use cortex_m;
 use tm4c129x;
 
+const LEDD1: u8 = 0x1; // PN0
+const LEDD2: u8 = 0x2; // PN1
 
 const LED1: u8 = 0x10; // PF1
 const LED2: u8 = 0x40; // PF3
@@ -24,10 +28,10 @@ const AI_ERRN: u8 = 0x10;    // PL4
 const ERR_LATCHN: u8 = 0x20; // PL5
 const ERR_RESN: u8 = 0x01;   // PQ0
 
-const PWM_LOAD: u16 = (/*pwmclk*/16_000_000u32 / /*freq*/100_000) as u16;
-const UART_DIV_16P6: u32 = /*altclk*/16_000_000 * (1 << /*len(divfrac)*/6) /
-                           (/*clkdiv*/16 * /*baud*/115200);
+const PWM_LOAD: u16 = (/*pwmclk*/120_000_000u32 / /*freq*/100_000) as u16;
 
+const UART_DIV_16P6: u32 = (((/*sysclk*/16_000_000 * 8) / /*baud*/115200) + 1) / 2;
+const UART_DIV_120P6: u32 = (((/*sysclk*/120_000_000 * 8) / /*baud*/115200) + 1) / 2;
 
 pub const AV_ADC_GAIN: f32 = 6.792703150912105;
 pub const FV_ADC_GAIN: f32 = 501.83449105726623;
@@ -163,43 +167,100 @@ pub fn process_errors() {
     }
 }
 
+
+#[allow(dead_code)]
+pub struct UART0;
+
+impl fmt::Write for UART0 {
+    fn write_str(&mut self, s: &str) -> Result<(), fmt::Error> {
+        for c in s.bytes() {
+            unsafe {
+                let uart_0 = tm4c129x::UART0.get();
+                while (*uart_0).fr.read().txff().bit() {}
+                (*uart_0).dr.write(|w| w.data().bits(c))
+            }
+        }
+        Ok(())
+    }
+}
+
+
+pub fn complete_fmt_write() {
+    unsafe {
+        let uart_0 = tm4c129x::UART0.get();
+        while (*uart_0).fr.read().busy().bit() {};	// complete UART transmit
+    }
+}
+
+fn enable_fpu() {
+    unsafe {
+        // see ds: 3.1.5.7 Enabling the FPU
+        asm!("
+            PUSH {R0, R1}
+            LDR.W R0, =0xE000ED88
+            LDR R1, [R0]
+            ORR R1, R1, #(0xF << 20)
+            STR R1, [R0]
+            DSB
+            ISB
+            POP {R0, R1}
+	    ")
+    }
+}
+
 pub fn init() {
     cortex_m::interrupt::free(|cs| {
+
         let sysctl = tm4c129x::SYSCTL.borrow(cs);
 
-        // Set up main oscillator
-        sysctl.moscctl.write(|w| w.noxtal().bit(false));
-        sysctl.moscctl.modify(|_, w| w.pwrdn().bit(false).oscrng().bit(true));
-
-        // Set up PLL with fVCO=320 MHz
-        sysctl.pllfreq1.write(|w| w.q().bits(0).n().bits(4));
-        sysctl.pllfreq0.write(|w| w.mint().bits(64).pllpwr().bit(true));
-        sysctl.rsclkcfg.modify(|_, w| w.pllsrc().mosc().newfreq().bit(true));
-        while !sysctl.pllstat.read().lock().bit() {}
-
-        // Bring up GPIO ports A, D, E, F, G, K, L, P, Q
+        // Bring up GPIO ports
         sysctl.rcgcgpio.modify(|_, w| {
-            w.r0().bit(true)
-             .r3().bit(true)
-             .r4().bit(true)
-             .r5().bit(true)
-             .r6().bit(true)
-             .r9().bit(true)
-             .r10().bit(true)
-             .r13().bit(true)
-             .r14().bit(true)
-        });
+             w.r0().bit(true)	//A
+              .r1().bit(true)   //B
+              .r2().bit(true)   //C
+              .r3().bit(true)   //D
+              .r4().bit(true)   //E
+              .r5().bit(true)   //F
+              .r6().bit(true)   //G
+              .r7().bit(true)   //H
+              .r8().bit(true)   //J
+              .r9().bit(true)   //K
+              .r10().bit(true)  //L
+              .r11().bit(true)  //M
+              .r12().bit(true)  //N
+              .r13().bit(true)  //P
+              .r14().bit(true)  //Q
+	});
         while !sysctl.prgpio.read().r0().bit() {}
+        while !sysctl.prgpio.read().r1().bit() {}
+        while !sysctl.prgpio.read().r2().bit() {}
         while !sysctl.prgpio.read().r3().bit() {}
         while !sysctl.prgpio.read().r4().bit() {}
         while !sysctl.prgpio.read().r5().bit() {}
         while !sysctl.prgpio.read().r6().bit() {}
+        while !sysctl.prgpio.read().r7().bit() {}
+        while !sysctl.prgpio.read().r8().bit() {}
         while !sysctl.prgpio.read().r9().bit() {}
         while !sysctl.prgpio.read().r10().bit() {}
+        while !sysctl.prgpio.read().r11().bit() {}
+        while !sysctl.prgpio.read().r12().bit() {}
         while !sysctl.prgpio.read().r13().bit() {}
         while !sysctl.prgpio.read().r14().bit() {}
 
-        // Set up UART0 at 115200
+        // Set up LEDs
+        if cfg!(feature = "ionpak1") {
+            let gpio_k = tm4c129x::GPIO_PORTK.borrow(cs);
+            gpio_k.dir.write(|w| w.dir().bits(LED1|LED2));
+            gpio_k.den.write(|w| w.den().bits(LED1|LED2));
+            gpio_k.data.modify(|r, w| w.data().bits(r.data().bits() | (LED1|LED2)));
+	} else {
+            let gpio_n = tm4c129x::GPIO_PORTN.borrow(cs);
+            gpio_n.dir.write(|w| w.dir().bits(LEDD1|LEDD2));
+            gpio_n.den.write(|w| w.den().bits(LEDD1|LEDD2));
+            gpio_n.data.modify(|r, w| w.data().bits(r.data().bits() | (LEDD1|LEDD2)));
+	}
+
+        // Set up UART0 at 115200@16mhz (independent of the crystal)
         let gpio_a = tm4c129x::GPIO_PORTA_AHB.borrow(cs);
         gpio_a.dir.write(|w| w.dir().bits(0b11));
         gpio_a.den.write(|w| w.den().bits(0b11));
@@ -211,31 +272,81 @@ pub fn init() {
 
         let uart_0 = tm4c129x::UART0.borrow(cs);
         uart_0.cc.write(|w| w.cs().altclk());
-        uart_0.ibrd.write(|w| w.divint().bits((UART_DIV_16P6 >> 6) as u16));
-        uart_0.fbrd.write(|w| w.divfrac().bits(UART_DIV_16P6 as u8));
+        uart_0.ibrd.write(|w| w.divint().bits((UART_DIV_16P6 / 64) as u16));
+        uart_0.fbrd.write(|w| w.divfrac().bits((UART_DIV_16P6 % 64) as u8));
         uart_0.lcrh.write(|w| w.wlen()._8().fen().bit(true));
         uart_0.ctl.write(|w| w.rxe().bit(true).txe().bit(true).uarten().bit(true));
 
-        // Set up LEDs
-        let gpio_k = tm4c129x::GPIO_PORTK.borrow(cs);
-        gpio_k.dir.write(|w| w.dir().bits(LED1|LED2));
-        gpio_k.den.write(|w| w.den().bits(LED1|LED2));
+        println!(r#"
+  _                         _
+ (_)                       | |
+  _  ___  _ __  _ __   __ _| |
+ | |/ _ \| '_ \| '_ \ / _` | |/ /
+ | | (_) | | | | |_) | (_| |   <
+ |_|\___/|_| |_| .__/ \__,_|_|\_\
+               | |
+               |_|
+"#);
+        print!("{}", include_str!("version.ascii"));
+        complete_fmt_write();
 
-        // Set up gain and emission range control pins
-        let gpio_p = tm4c129x::GPIO_PORTP.borrow(cs);
-        gpio_p.dir.write(|w| w.dir().bits(0b111111));
-        gpio_p.den.write(|w| w.den().bits(0b111111));
-        set_emission_range(EmissionRange::Med);
-        set_electrometer_range(ElectrometerRange::Med);
+        // Set up main oscillator
+        sysctl.moscctl.write(|w| w.noxtal().bit(false));
+        sysctl.moscctl.modify(|_, w| w.pwrdn().bit(false).oscrng().bit(true));
 
-        // Set up error pins
-        let gpio_l = tm4c129x::GPIO_PORTL.borrow(cs);
-        let gpio_q = tm4c129x::GPIO_PORTQ.borrow(cs);
-        gpio_l.pur.write(|w| w.pue().bits(FV_ERRN|FBV_ERRN|FBI_ERRN|AV_ERRN|AI_ERRN));
-        gpio_l.den.write(|w| w.den().bits(FV_ERRN|FBV_ERRN|FBI_ERRN|AV_ERRN|AI_ERRN|ERR_LATCHN));
-        gpio_q.dir.write(|w| w.dir().bits(ERR_RESN));
-        gpio_q.den.write(|w| w.den().bits(ERR_RESN));
-        reset_error(); // error latch is an undefined state upon power-up; reset it
+        // Prepare flash for the high-freq clk
+	sysctl.memtim0.write(|w| unsafe { w.bits(0x01950195u32) });
+        sysctl.rsclkcfg.write(|w| unsafe { w.bits(0x80000000u32) });
+
+        if cfg!(feature = "divsclk") {
+            // DIVSCLK out setup (PQ4)
+            let gpio_q = tm4c129x::GPIO_PORTQ.borrow(cs);
+            gpio_q.dir.write(|w| w.dir().bits(0x10));
+            gpio_q.den.write(|w| w.den().bits(0x10));
+            gpio_q.afsel.write(|w| w.afsel().bits(0x10));
+            gpio_q.pctl.write(|w| unsafe { w.pmc4().bits(7) });
+            sysctl.divsclk.write(|w| unsafe { w.en().bit(true).src().bits(0).div().bits(120-1) });	//
+        }
+
+        // Set up PLL with fVCO=480 MHz
+        sysctl.pllfreq1.write(|w| w.q().bits(0).n().bits(4));
+        sysctl.pllfreq0.write(|w| w.mint().bits(96).pllpwr().bit(true));
+        sysctl.rsclkcfg.modify(|_, w| w.pllsrc().mosc().newfreq().bit(true));
+        while !sysctl.pllstat.read().lock().bit() {}
+        print!("Switching to PLL: ");
+        complete_fmt_write();
+
+        // Switching to PLL (sysclk=120MHz)
+        sysctl.rsclkcfg.write(|w| unsafe { w.bits(0b1_0_0_1_0011_0000_0000000000_0000000011) });
+
+        uart_0.cc.write(|w| w.cs().sysclk());
+        uart_0.ibrd.write(|w| w.divint().bits((UART_DIV_120P6 / 64) as u16));
+        uart_0.fbrd.write(|w| w.divfrac().bits((UART_DIV_120P6 % 64) as u8));
+        uart_0.lcrh.write(|w| w.wlen()._8().fen().bit(true));
+        uart_0.ctl.write(|w| w.rxe().bit(true).txe().bit(true).uarten().bit(true));
+        println!("done");
+        complete_fmt_write();
+
+        // Enable FPU
+        enable_fpu();
+
+        if cfg!(feature = "ionpak1") {
+            // Set up gain and emission range control pins
+            let gpio_p = tm4c129x::GPIO_PORTP.borrow(cs);
+            gpio_p.dir.write(|w| w.dir().bits(0b111111));
+            gpio_p.den.write(|w| w.den().bits(0b111111));
+            set_emission_range(EmissionRange::Med);
+            set_electrometer_range(ElectrometerRange::Med);
+
+            // Set up error pins
+            let gpio_l = tm4c129x::GPIO_PORTL.borrow(cs);
+            let gpio_q = tm4c129x::GPIO_PORTQ.borrow(cs);
+            gpio_l.pur.write(|w| w.pue().bits(FV_ERRN|FBV_ERRN|FBI_ERRN|AV_ERRN|AI_ERRN));
+            gpio_l.den.write(|w| w.den().bits(FV_ERRN|FBV_ERRN|FBI_ERRN|AV_ERRN|AI_ERRN|ERR_LATCHN));
+            gpio_q.dir.write(|w| w.dir().bits(ERR_RESN));
+            gpio_q.den.write(|w| w.den().bits(ERR_RESN));
+            reset_error(); // error latch is an undefined state upon power-up; reset it
+        }
 
         // Set up PWMs
         let gpio_f = tm4c129x::GPIO_PORTF_AHB.borrow(cs);
@@ -290,7 +401,7 @@ pub fn init() {
         let adc0 = tm4c129x::ADC0.borrow(cs);
         // Due to silicon erratum, this HAS to use PLL. PIOSC is not a suitable source.
         // fADC=32 MHz
-        adc0.cc.write(|w| w.cs().syspll().clkdiv().bits(10));
+        adc0.cc.write(|w| w.cs().syspll().clkdiv().bits(15-1));		//VCO 480 / 15 = 32MHz ADC clock
         adc0.im.write(|w| w.mask0().bit(true));
         adc0.emux.write(|w| w.em0().always());
         adc0.ssmux0.write(|w| {
