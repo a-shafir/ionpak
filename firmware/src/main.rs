@@ -1,4 +1,4 @@
-#![feature(asm, used, const_fn, core_float)]
+#![feature(asm, used, const_fn, core_float, use_extern_macros, naked_functions, core_intrinsics)]
 #![no_std]
 
 extern crate cortex_m;
@@ -10,8 +10,13 @@ use cortex_m::exception::Handlers as ExceptionHandlers;
 use cortex_m::interrupt::Mutex;
 use tm4c129x::interrupt::Interrupt;
 use tm4c129x::interrupt::Handlers as InterruptHandlers;
+use cortex_m::ctxt::Context;
 
 use board::UART0;
+use board::complete_fmt_write;
+
+const LEDD1: u8 = 0x1; // PN0
+const LEDD2: u8 = 0x2; // PN1
 
 #[macro_export]
 macro_rules! print {
@@ -51,15 +56,15 @@ static LOOP_CATHODE: Mutex<RefCell<loop_cathode::Controller>> = Mutex::new(RefCe
 static ELECTROMETER: Mutex<RefCell<electrometer::Electrometer>> = Mutex::new(RefCell::new(
     electrometer::Electrometer::new()));
 
+fn address<T>(r: *const T) -> usize {
+    r as usize
+}
+
 fn main() {
     board::init();
 
-    let t1 : f64 = 1.9;
-    let mut t2 : f64 = 1.0;
-    while t2 < 20.0 {
-        t2 = t2 * t1;
-    }
-    println!("FPU test: {} (24.760988)", t2);
+    //enabling FPU in the priveleged mode
+    unsafe { asm!("svc 1")};
 
     println!("Ready.");
 
@@ -91,8 +96,6 @@ fn main() {
         loop_cathode.set_bias_target(cathode_bias);
 */
     });
-
-    println!("FPU1");
 
     let mut next_blink = 0;
     let mut next_info = 0;
@@ -178,6 +181,12 @@ extern fn adc0_ss0(_ctxt: ADC0SS0) {
 #[used]
 #[link_section = ".rodata.exceptions"]
 pub static EXCEPTIONS: ExceptionHandlers = ExceptionHandlers {
+    nmi: custom_handler,
+    hard_fault: custom_handler,
+    mem_manage: custom_handler,
+    bus_fault: custom_handler,
+    usage_fault: custom_handler,
+    svcall: svcall_handler,
     ..cortex_m::exception::DEFAULT_HANDLERS
 };
 
@@ -187,3 +196,175 @@ pub static INTERRUPTS: InterruptHandlers = InterruptHandlers {
     ADC0SS0: adc0_ss0,
     ..tm4c129x::interrupt::DEFAULT_HANDLERS
 };
+
+#[naked]
+pub extern "C" fn svcall_handler<T>(_token: T)
+where
+    T: Context,
+{
+    // This is the actual exception handler. `_sr` is a pointer to the previous
+    // stack frame
+    #[cfg(target_arch = "arm")]
+    extern "C" fn handler(_sr: &StackedRegisters) {
+        // Verifying the svcall exception
+        if 11 == unsafe { (*cortex_m::peripheral::SCB.get()).icsr.read() } as u8 {
+            // getting the SVC code (https://stackoverflow.com/questions/16156404/writing-own-svc-calls-arm-assembly)
+            let scode = unsafe { *((_sr.pc-2) as *mut u8) };
+            match scode {
+                // asm SVC 1 as FPU enable
+                1 => {
+                    let scb = tm4c129x::SCB.get();
+                    unsafe { (*scb).cpacr.write(0x00F00000u32) }
+                }
+                _ => {
+                }
+            }
+        }
+    }
+
+    match () {
+        #[cfg(target_arch = "arm")]
+        () => {
+            unsafe {
+                // "trampoline" to get to the real exception handler.
+                asm!("mrs r0, MSP
+                  ldr r1, [r0, #20]
+                  b $0"
+                     :
+                     : "i"(handler as extern "C" fn(&StackedRegisters))
+                     :
+                     : "volatile");
+
+                ::core::intrinsics::unreachable()
+            }
+        }
+        #[cfg(not(target_arch = "arm"))]
+        () => {}
+    }
+}
+
+#[naked]
+pub extern "C" fn custom_handler<T>(_token: T)
+where
+    T: Context,
+{
+    // This is the actual exception handler. `_sr` is a pointer to the previous
+    // stack frame
+    #[cfg(target_arch = "arm")]
+    extern "C" fn handler(_sr: &StackedRegisters) -> ! {
+        // printing the exception currently being serviced
+        println!("EXCEPTION {:?} @ PC=0x{:08x} LR=0x{:08x} XPSR=0x{:08x}", Exception::current(), _sr.pc, _sr.lr, _sr.xpsr);
+        println!("R0=0x{:08x} R1=0x{:08x} R2=0x{:08x} R3=0x{:08x} R12=0x{:08x}", _sr.r0, _sr.r1, _sr.r2, _sr.r3, _sr.r12);
+        
+        let points_at = unsafe { *((_sr.pc-2) as *mut u8) };
+
+        println!("X=0x{:08x}", points_at);
+
+        cortex_m::asm::bkpt();
+
+        loop {}
+    }
+
+    match () {
+        #[cfg(target_arch = "arm")]
+        () => {
+            unsafe {
+                // "trampoline" to get to the real exception handler.
+                asm!("mrs r0, MSP
+                  ldr r1, [r0, #20]
+                  b $0"
+                     :
+                     : "i"(handler as extern "C" fn(&StackedRegisters) -> !)
+                     :
+                     : "volatile");
+
+                ::core::intrinsics::unreachable()
+            }
+        }
+        #[cfg(not(target_arch = "arm"))]
+        () => {}
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Exception {
+    /// i.e. currently not servicing an exception
+    ThreadMode,
+    /// Non-maskable interrupt.
+    Nmi,
+    /// All class of fault.
+    HardFault,
+    /// Memory management.
+    MemoryManagementFault,
+    /// Pre-fetch fault, memory access fault.
+    BusFault,
+    /// Undefined instruction or illegal state.
+    UsageFault,
+    /// System service call via SWI instruction
+    SVCall,
+    /// Pendable request for system service
+    PendSV,
+    /// System tick timer
+    Systick,
+    /// An interrupt
+    Interrupt(u8),
+    // Unreachable variant
+    #[doc(hidden)]
+    Reserved,
+}
+
+impl Exception {
+    /// Returns the kind of exception that's currently being serviced
+    pub fn current() -> Exception {
+        match unsafe { (*cortex_m::peripheral::SCB.get()).icsr.read() } as u8 {
+            0 => Exception::ThreadMode,
+            2 => Exception::Nmi,
+            3 => Exception::HardFault,
+            4 => Exception::MemoryManagementFault,
+            5 => Exception::BusFault,
+            6 => Exception::UsageFault,
+            11 => Exception::SVCall,
+            14 => Exception::PendSV,
+            15 => Exception::Systick,
+            n if n >= 16 => Exception::Interrupt(n - 16),
+            _ => Exception::Reserved,
+        }
+    }
+}
+
+/// Registers stacked during an exception
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct StackedRegisters {
+    /// (General purpose) Register 0
+    pub r0: u32,
+    /// (General purpose) Register 1
+    pub r1: u32,
+    /// (General purpose) Register 2
+    pub r2: u32,
+    /// (General purpose) Register 3
+    pub r3: u32,
+    /// (General purpose) Register 12
+    pub r12: u32,
+    /// Linker Register
+    pub lr: u32,
+    /// Program Counter
+    pub pc: u32,
+    /// Program Status Register
+    pub xpsr: u32,
+}
+
+// panic print
+#[no_mangle]
+pub unsafe extern "C" fn rust_begin_unwind(
+    _args: ::core::fmt::Arguments,
+    _file: &'static str,
+    _line: u32,
+) -> ! {
+    println!("panicked at {}:{}", _file, _line);
+
+    #[cfg(target_arch = "arm")]
+    asm!("bkpt" :::: "volatile");
+
+    loop {}
+}

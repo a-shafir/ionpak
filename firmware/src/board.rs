@@ -50,7 +50,6 @@ pub const FBI_R223: f32 = 200.0;
 pub const FBI_R224: f32 = 39.0;
 pub const FBI_R225: f32 = 22000.0;
 
-
 pub fn set_led(nr: u8, state: bool) {
     let bit = match nr {
         1 => LED1,
@@ -192,22 +191,6 @@ pub fn complete_fmt_write() {
     }
 }
 
-fn enable_fpu() {
-    unsafe {
-        // see ds: 3.1.5.7 Enabling the FPU
-        asm!("
-            PUSH {R0, R1}
-            LDR.W R0, =0xE000ED88
-            LDR R1, [R0]
-            ORR R1, R1, #(0xF << 20)
-            STR R1, [R0]
-            DSB
-            ISB
-            POP {R0, R1}
-	    ")
-    }
-}
-
 pub fn init() {
     cortex_m::interrupt::free(|cs| {
 
@@ -230,7 +213,7 @@ pub fn init() {
               .r12().bit(true)  //N
               .r13().bit(true)  //P
               .r14().bit(true)  //Q
-	});
+    	});
         while !sysctl.prgpio.read().r0().bit() {}
         while !sysctl.prgpio.read().r1().bit() {}
         while !sysctl.prgpio.read().r2().bit() {}
@@ -253,12 +236,12 @@ pub fn init() {
             gpio_k.dir.write(|w| w.dir().bits(LED1|LED2));
             gpio_k.den.write(|w| w.den().bits(LED1|LED2));
             gpio_k.data.modify(|r, w| w.data().bits(r.data().bits() | (LED1|LED2)));
-	} else {
-            let gpio_n = tm4c129x::GPIO_PORTN.borrow(cs);
-            gpio_n.dir.write(|w| w.dir().bits(LEDD1|LEDD2));
-            gpio_n.den.write(|w| w.den().bits(LEDD1|LEDD2));
-            gpio_n.data.modify(|r, w| w.data().bits(r.data().bits() | (LEDD1|LEDD2)));
-	}
+        } else {
+                let gpio_n = tm4c129x::GPIO_PORTN.borrow(cs);
+                gpio_n.dir.write(|w| w.dir().bits(LEDD1|LEDD2));
+                gpio_n.den.write(|w| w.den().bits(LEDD1|LEDD2));
+//                gpio_n.data.modify(|r, w| w.data().bits(r.data().bits() | (LEDD1)));
+        }
 
         // Set up UART0 at 115200@16mhz (independent of the crystal)
         let gpio_a = tm4c129x::GPIO_PORTA_AHB.borrow(cs);
@@ -295,7 +278,7 @@ pub fn init() {
         sysctl.moscctl.modify(|_, w| w.pwrdn().bit(false).oscrng().bit(true));
 
         // Prepare flash for the high-freq clk
-	sysctl.memtim0.write(|w| unsafe { w.bits(0x01950195u32) });
+    	sysctl.memtim0.write(|w| unsafe { w.bits(0x01950195u32) });
         sysctl.rsclkcfg.write(|w| unsafe { w.bits(0x80000000u32) });
 
         if cfg!(feature = "divsclk") {
@@ -326,9 +309,6 @@ pub fn init() {
         uart_0.ctl.write(|w| w.rxe().bit(true).txe().bit(true).uarten().bit(true));
         println!("done");
         complete_fmt_write();
-
-        // Enable FPU
-        enable_fpu();
 
         if cfg!(feature = "ionpak1") {
             // Set up gain and emission range control pins
