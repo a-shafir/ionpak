@@ -1,0 +1,14 @@
+[package]
+name = "ionpak-firmware"
+version = "0.1.0"
+authors = ["whitequark <whitequark@whitequark.org>"]
+
+[dependencies]
+cortex-m = "0.2.5"
+cortex-m-rt = { version = "0.2.0", features = ["linker-script"], default-features = false }
+tm4c129x = { git = "https://github.com/m-labs/dslite2svd" }
+smoltcp = { path = "../smoltcp", features = [], default-features = false }
+
+[features]
+divsclk = []
+ionpak1 = []

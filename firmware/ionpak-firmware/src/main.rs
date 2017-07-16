@@ -1,5 +1,7 @@
-#![feature(asm, used, const_fn, core_float, use_extern_macros, naked_functions, core_intrinsics)]
+#![feature(asm, used, const_fn, core_float, use_extern_macros, naked_functions,
+    core_intrinsics)]
 #![no_std]
+#![allow(unused_mut)]
 
 extern crate cortex_m;
 extern crate cortex_m_rt;
@@ -11,6 +13,13 @@ use cortex_m::interrupt::Mutex;
 use tm4c129x::interrupt::Interrupt;
 use tm4c129x::interrupt::Handlers as InterruptHandlers;
 use cortex_m::ctxt::Context;
+
+extern crate smoltcp;
+use smoltcp::Error;
+use smoltcp::wire::{EthernetAddress, IpAddress};
+use smoltcp::iface::{ArpCache, SliceArpCache, EthernetInterface};
+use smoltcp::socket::{AsSocket, SocketSet};
+use smoltcp::socket::{TcpSocket, TcpSocketBuffer};
 
 use board::UART0;
 use board::complete_fmt_write;
@@ -38,6 +47,7 @@ mod pid;
 mod loop_anode;
 mod loop_cathode;
 mod electrometer;
+mod ethmac;
 
 static TIME: Mutex<Cell<u64>> = Mutex::new(Cell::new(0));
 
@@ -60,13 +70,90 @@ fn address<T>(r: *const T) -> usize {
     r as usize
 }
 
+//#[no_mangle]
+//pub extern fn main() -> i32 {
 fn main() {
+
+    // Enable the FPU
+    unsafe {
+        asm!("
+            PUSH {R0, R1}
+            LDR.W R0, =0xE000ED88
+            LDR R1, [R0]
+            ORR R1, R1, #(0xF << 20)
+            STR R1, [R0]
+            DSB
+            ISB
+            POP {R0, R1}
+        ");
+    }
+    // Beware of the compiler inserting FPU instructions
+    // in the prologue of functions before the FPU is enabled!
+    main_with_fpu();
+}
+
+#[inline(never)]
+fn main_with_fpu() {
+
     board::init();
 
-    //enabling FPU in the priveleged mode
-    unsafe { asm!("svc 1")};
+    cortex_m::interrupt::free(|cs| {
+        let nvic = tm4c129x::NVIC.borrow(cs);
+        nvic.enable(Interrupt::TIMER0A);
+    });
 
-    println!("Ready.");
+    let flashctl = tm4c129x::FLASH_CTRL.get();
+    let userreg0 = unsafe { (*flashctl).userreg0.read().bits() };
+    let userreg1 = unsafe { (*flashctl).userreg1.read().bits() };
+
+    let     hardware_addr = EthernetAddress([userreg0 as u8, (userreg0 >> 8) as u8, (userreg0 >> 16) as u8, userreg1 as u8, (userreg1 >> 8) as u8, (userreg1 >> 16) as u8]);
+    println!("using IC MAC address {}", hardware_addr);
+
+    let mut protocol_addrs = [IpAddress::v4(192, 168, 3, 200)];
+    println!("Using default IP address {}", protocol_addrs[0]);
+
+    let mut arp_cache_entries: [_; 8] = Default::default();
+    let mut arp_cache = SliceArpCache::new(&mut arp_cache_entries[..]);
+    
+    ethmac::init(hardware_addr.0);
+    let mut device = ethmac::EthernetDevice;
+
+    let mut iface = EthernetInterface::new(
+        &mut device, &mut arp_cache as &mut ArpCache,
+        hardware_addr, &mut protocol_addrs[..]);
+
+    let server_socket = {
+        // It is not strictly necessary to use a `static mut` and unsafe code here, but
+        // on embedded systems that smoltcp targets it is far better to allocate the data
+        // statically to verify that it fits into RAM rather than get undefined behavior
+        // when stack overflows.
+        static mut TCP_SERVER_RX_DATA: [u8; 1024] = [0; 1024];
+        static mut TCP_SERVER_TX_DATA: [u8; 1024] = [0; 1024];
+        let tcp_rx_buffer = TcpSocketBuffer::new(unsafe { &mut TCP_SERVER_RX_DATA[..] });
+        let tcp_tx_buffer = TcpSocketBuffer::new(unsafe { &mut TCP_SERVER_TX_DATA[..] });
+        TcpSocket::new(tcp_rx_buffer, tcp_tx_buffer)
+    };
+    
+    let mut socket_set_entries: [_; 2] = Default::default();
+    let mut socket_set = SocketSet::new(&mut socket_set_entries[..]);
+    let server_handle = socket_set.add(server_socket);
+    
+    println!("Starting main loop...");
+
+    let mut next_info = 0;
+    loop {
+        let time_ms = get_time();
+        if time_ms > next_info {
+            ethmac::info();
+            next_info = next_info + 3000;
+        }
+
+        match iface.poll(&mut socket_set, time_ms) {
+            Ok(()) | Err(Error::Exhausted) => (),
+            Err(e) => println!("poll error: {}", e)
+        }
+
+    };
 
     cortex_m::interrupt::free(|cs| {
         let nvic = tm4c129x::NVIC.borrow(cs);
@@ -143,6 +230,18 @@ fn main() {
     }
 }
 
+use tm4c129x::interrupt::TIMER0A;
+extern fn timer0_a(_ctxt: TIMER0A) {
+    cortex_m::interrupt::free(|cs| {
+        let timer0 = tm4c129x::TIMER0.borrow(cs);
+        timer0.icr.write(|w| w.tatocint().bit(true)); // Clear time-out interrupt bit
+
+        // Increment 1ms timer
+        let time = TIME.borrow(cs);
+        time.set(time.get() + 1);
+    });
+}
+
 use tm4c129x::interrupt::ADC0SS0;
 extern fn adc0_ss0(_ctxt: ADC0SS0) {
     cortex_m::interrupt::free(|cs| {
@@ -166,15 +265,14 @@ extern fn adc0_ss0(_ctxt: ADC0SS0) {
         loop_cathode.adc_input(fbi_sample, fd_sample, fv_sample, fbv_sample);
         electrometer.adc_input(ic_sample);
 
-        let time = TIME.borrow(cs);
-        time.set(time.get() + 1);
-
+/*
         if time.get() % 300 == 0 {
             println!("");
             loop_anode.get_status().debug_print();
             loop_cathode.get_status().debug_print();
             electrometer.get_status().debug_print();
         }
+*/
     });
 }
 
@@ -186,62 +284,17 @@ pub static EXCEPTIONS: ExceptionHandlers = ExceptionHandlers {
     mem_manage: custom_handler,
     bus_fault: custom_handler,
     usage_fault: custom_handler,
-    svcall: svcall_handler,
+    svcall: custom_handler,
     ..cortex_m::exception::DEFAULT_HANDLERS
 };
 
 #[used]
 #[link_section = ".rodata.interrupts"]
 pub static INTERRUPTS: InterruptHandlers = InterruptHandlers {
+    TIMER0A: timer0_a,
     ADC0SS0: adc0_ss0,
     ..tm4c129x::interrupt::DEFAULT_HANDLERS
 };
-
-#[naked]
-pub extern "C" fn svcall_handler<T>(_token: T)
-where
-    T: Context,
-{
-    // This is the actual exception handler. `_sr` is a pointer to the previous
-    // stack frame
-    #[cfg(target_arch = "arm")]
-    extern "C" fn handler(_sr: &StackedRegisters) {
-        // Verifying the svcall exception
-        if 11 == unsafe { (*cortex_m::peripheral::SCB.get()).icsr.read() } as u8 {
-            // getting the SVC code (https://stackoverflow.com/questions/16156404/writing-own-svc-calls-arm-assembly)
-            let scode = unsafe { *((_sr.pc-2) as *mut u8) };
-            match scode {
-                // asm SVC 1 as FPU enable
-                1 => {
-                    let scb = tm4c129x::SCB.get();
-                    unsafe { (*scb).cpacr.write(0x00F00000u32) }
-                }
-                _ => {
-                }
-            }
-        }
-    }
-
-    match () {
-        #[cfg(target_arch = "arm")]
-        () => {
-            unsafe {
-                // "trampoline" to get to the real exception handler.
-                asm!("mrs r0, MSP
-                  ldr r1, [r0, #20]
-                  b $0"
-                     :
-                     : "i"(handler as extern "C" fn(&StackedRegisters))
-                     :
-                     : "volatile");
-
-                ::core::intrinsics::unreachable()
-            }
-        }
-        #[cfg(not(target_arch = "arm"))]
-        () => {}
-    }
-}
 
 #[naked]
 pub extern "C" fn custom_handler<T>(_token: T)
@@ -256,10 +309,6 @@ where
         println!("EXCEPTION {:?} @ PC=0x{:08x} LR=0x{:08x} XPSR=0x{:08x}", Exception::current(), _sr.pc, _sr.lr, _sr.xpsr);
         println!("R0=0x{:08x} R1=0x{:08x} R2=0x{:08x} R3=0x{:08x} R12=0x{:08x}", _sr.r0, _sr.r1, _sr.r2, _sr.r3, _sr.r12);
         
-        let points_at = unsafe { *((_sr.pc-2) as *mut u8) };
-
-        println!("X=0x{:08x}", points_at);
-
         cortex_m::asm::bkpt();
 
         loop {}
@@ -361,10 +410,8 @@ pub unsafe extern "C" fn rust_begin_unwind(
     _file: &'static str,
     _line: u32,
 ) -> ! {
-    println!("panicked at {}:{}", _file, _line);
+    println!("panicked at {}:{}: {}", _file, _line, _args);
 
-    #[cfg(target_arch = "arm")]
-    asm!("bkpt" :::: "volatile");
-
+    println!("halting.");
     loop {}
 }
