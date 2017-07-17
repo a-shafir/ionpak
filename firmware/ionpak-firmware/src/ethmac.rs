@@ -38,7 +38,6 @@ const ETH_TX_BUFFER_SIZE: usize =   1536;
 const ETH_RX_BUFFER_COUNT: usize =  3;
 const ETH_RX_BUFFER_SIZE: usize =   1536;
 
-#[repr(C)]
 pub struct EmacData {
     pub tx_desc_buf: [u32; ETH_TX_BUFFER_COUNT * ETH_DESC_U32_SIZE],
     pub rx_desc_buf: [u32; ETH_RX_BUFFER_COUNT * ETH_DESC_U32_SIZE],
@@ -46,7 +45,7 @@ pub struct EmacData {
     pub rx_cur_desc: usize,
     pub tx_counter: u32,
     pub rx_counter: u32,
-    pub tx_pkt_buf: [u8; ETH_TX_BUFFER_COUNT * ETH_RX_BUFFER_SIZE],
+    pub tx_pkt_buf: [u8; ETH_TX_BUFFER_COUNT * ETH_TX_BUFFER_SIZE],
     pub rx_pkt_buf: [u8; ETH_RX_BUFFER_COUNT * ETH_RX_BUFFER_SIZE],
 }
 
@@ -60,10 +59,6 @@ static mut EMAC_DATA: EmacData = EmacData {
     tx_pkt_buf: [0; ETH_TX_BUFFER_COUNT * ETH_TX_BUFFER_SIZE],
     rx_pkt_buf: [0; ETH_RX_BUFFER_COUNT * ETH_RX_BUFFER_SIZE],
 };
-
-fn address<T>(r: *const T) -> usize {
-    r as usize
-}
 
 fn delay(d: i32) {
     for x in 0..d {
@@ -236,12 +231,12 @@ pub fn init(mac_addr: [u8; 6]) {
                 // Initialize transmit buffer size
                 EMAC_DATA.tx_desc_buf[p + 1] = 0;
                 // Transmit buffer address
-                EMAC_DATA.tx_desc_buf[p + 2] = address(&EMAC_DATA.tx_pkt_buf[r]) as u32;;
+                EMAC_DATA.tx_desc_buf[p + 2] = (&EMAC_DATA.tx_pkt_buf[r] as *const u8) as u32;
                 // Next descriptor address
                 if x != ETH_TX_BUFFER_COUNT - 1 {
-                    EMAC_DATA.tx_desc_buf[p + 3] = address(&EMAC_DATA.tx_desc_buf[p + ETH_DESC_U32_SIZE]) as u32;
+                    EMAC_DATA.tx_desc_buf[p + 3] = (&EMAC_DATA.tx_desc_buf[p + ETH_DESC_U32_SIZE] as *const u32) as u32;
                 } else {
-                    EMAC_DATA.tx_desc_buf[p + 3] = address(&EMAC_DATA.tx_desc_buf[0]) as u32;
+                    EMAC_DATA.tx_desc_buf[p + 3] = (&EMAC_DATA.tx_desc_buf[0] as *const u32) as u32;
                 }
                 // Reserved fields
                 EMAC_DATA.tx_desc_buf[p + 4] = 0;
@@ -260,14 +255,14 @@ pub fn init(mac_addr: [u8; 6]) {
                 // The descriptor is initially owned by the DMA
                 EMAC_DATA.rx_desc_buf[p + 0] = EMAC_RDES0_OWN;
                 // Use chain structure rather than ring structure
-                EMAC_DATA.rx_desc_buf[p + 1] = EMAC_RDES1_RCH  | ((ETH_RX_BUFFER_SIZE as u32) & EMAC_RDES1_RBS1);;
+                EMAC_DATA.rx_desc_buf[p + 1] = EMAC_RDES1_RCH  | ((ETH_RX_BUFFER_SIZE as u32) & EMAC_RDES1_RBS1);
                 // Receive buffer address
-                EMAC_DATA.rx_desc_buf[p + 2] = address(&EMAC_DATA.rx_pkt_buf[r]) as u32;;
+                EMAC_DATA.rx_desc_buf[p + 2] = (&EMAC_DATA.rx_pkt_buf[r] as *const u8) as u32;
                 // Next descriptor address
                 if x != ETH_RX_BUFFER_COUNT - 1 {
-                    EMAC_DATA.rx_desc_buf[p + 3] = address(&EMAC_DATA.rx_desc_buf[p + ETH_DESC_U32_SIZE]) as u32;
+                    EMAC_DATA.rx_desc_buf[p + 3] = (&EMAC_DATA.rx_desc_buf[p + ETH_DESC_U32_SIZE] as *const u32) as u32;
                 } else {
-                    EMAC_DATA.rx_desc_buf[p + 3] = address(&EMAC_DATA.rx_desc_buf[0]) as u32;
+                    EMAC_DATA.rx_desc_buf[p + 3] = (&EMAC_DATA.rx_desc_buf[0] as *const u32) as u32;
                 }
                 // Extended status
                 EMAC_DATA.rx_desc_buf[p + 4] = 0;
@@ -284,8 +279,8 @@ pub fn init(mac_addr: [u8; 6]) {
             EMAC_DATA.rx_cur_desc = 0;
         }
 
-        emac0.txdladdr.write(|w| unsafe { w.bits(address(&EMAC_DATA.tx_desc_buf[0]) as u32)});
-        emac0.rxdladdr.write(|w| unsafe { w.bits(address(&EMAC_DATA.rx_desc_buf[0]) as u32)});
+        emac0.txdladdr.write(|w| unsafe { w.bits((&EMAC_DATA.tx_desc_buf[0] as *const u32) as u32)});
+        emac0.rxdladdr.write(|w| unsafe { w.bits((&EMAC_DATA.rx_desc_buf[0] as *const u32) as u32)});
 
         // Manage MAC transmission and reception
         emac0.cfg.modify(|_, w|
