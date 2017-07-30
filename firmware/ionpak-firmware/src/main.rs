@@ -2,6 +2,7 @@
     core_intrinsics)]
 #![no_std]
 #![allow(unused_mut)]
+#![allow(dead_code)]
 
 extern crate cortex_m;
 extern crate cortex_m_rt;
@@ -48,6 +49,7 @@ mod loop_anode;
 mod loop_cathode;
 mod electrometer;
 mod ethmac;
+mod eeprom;
 
 static TIME: Mutex<Cell<u64>> = Mutex::new(Cell::new(0));
 
@@ -101,6 +103,32 @@ fn main_with_fpu() {
         let nvic = tm4c129x::NVIC.borrow(cs);
         nvic.enable(Interrupt::TIMER0A);
     });
+
+    eeprom::init();
+//    eeprom::mass_erase();
+    let mut eebuf: [u32; 16] = [0x55; 16];
+    eeprom::read_blk(&mut eebuf, 0, false);
+    for i in 0..16 {
+        println!("BUF{:02}:{:08x}", i, eebuf[i]);
+    }
+    for i in 0..16 {
+         eebuf[i] += 0x12345678 + i as u32;
+    }
+    eeprom::write_blk(&mut eebuf, 0);
+
+    let err = eeprom::read_blk(&mut eebuf, 0, true);
+    println!("BUF_VERIFY{}", err);
+
+    eebuf = [0xAA; 16];
+    eeprom::read_blk(&mut eebuf, 0, false);
+    for i in 0..16 {
+        println!("BUF{:02}:{:08x}", i, eebuf[i]);
+    }
+    
+
+    
+
+
 
     let flashctl = tm4c129x::FLASH_CTRL.get();
     let userreg0 = unsafe { (*flashctl).userreg0.read().bits() };

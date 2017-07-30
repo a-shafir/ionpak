@@ -60,7 +60,7 @@ static mut EMAC_DATA: EmacData = EmacData {
     rx_pkt_buf: [0; ETH_RX_BUFFER_COUNT * ETH_RX_BUFFER_SIZE],
 };
 
-fn delay(d: i32) {
+pub fn delay(d: i32) {
     for x in 0..d {
         unsafe {
             asm!("

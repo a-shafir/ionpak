@@ -196,7 +196,6 @@ pub fn complete_fmt_write() {
 
 pub fn init() {
     cortex_m::interrupt::free(|cs| {
-
         let sysctl = tm4c129x::SYSCTL.borrow(cs);
         let gpio_a = tm4c129x::GPIO_PORTA_AHB.borrow(cs);
         let gpio_d = tm4c129x::GPIO_PORTD_AHB.borrow(cs);
