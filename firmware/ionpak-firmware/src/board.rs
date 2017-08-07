@@ -1,9 +1,8 @@
 use cortex_m;
 use tm4c129x;
 
-
-const LED1: u8 = 0x10; // PF1
-const LED2: u8 = 0x40; // PF3
+const LED1: u8 = 0x10; // PK4
+const LED2: u8 = 0x40; // PK6
 
 const HV_PWM: u8 = 0x01;  // PF0
 const FV_PWM: u8 = 0x04;  // PF2
@@ -226,6 +225,10 @@ pub fn init() {
         let gpio_k = tm4c129x::GPIO_PORTK.borrow(cs);
         gpio_k.dir.write(|w| w.dir().bits(LED1|LED2));
         gpio_k.den.write(|w| w.den().bits(LED1|LED2));
+
+        // Swithc LED1 to LAN mode
+        gpio_k.afsel.modify(|_, w| w.afsel().bits(LED1));
+        gpio_k.pctl.modify(|_, w| unsafe { w.pmc4().bits(5) }); //EN0LED0
 
         // Set up gain and emission range control pins
         let gpio_p = tm4c129x::GPIO_PORTP.borrow(cs);
